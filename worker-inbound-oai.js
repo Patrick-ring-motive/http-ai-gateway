@@ -169,10 +169,6 @@ async function onRequest(request, env) {
     }
     buf += dec.decode(value, { stream: true });
     for (const { role, content } of drainEvents()) {
-      if (role.startsWith('header:')) {
-        init.headers[role.slice(7)] = content;
-        continue;
-      }
       switch (role) {
         case 'status':
           init.status = parseInt(content, 10) || 502;
@@ -192,6 +188,8 @@ async function onRequest(request, env) {
         case 'error':
           pendingChunks.push(enc.encode(content || 'upstream error'));
           break;
+        default:
+          init.headers[role] = content;
       }
     }
   }
