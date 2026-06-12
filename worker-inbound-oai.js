@@ -235,13 +235,15 @@ async function onRequest(request, env) {
 
 function u8ToBase64(u8) {
   let s = '';
-  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  const len = u8.length;
+  for (let i = 0; i !== len; ++i) s += String.fromCharCode(u8[i]);
   return btoa(s);
 }
 
 function base64ToU8(b64) {
   const bin = atob(b64);
   const u8  = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  const len = bin.length;
+  for (let i = 0; i !== len; ++i) u8[i] = bin.charCodeAt(i);
   return u8;
 }
