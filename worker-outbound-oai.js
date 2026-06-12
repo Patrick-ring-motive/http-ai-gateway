@@ -4,11 +4,13 @@
  * POST (Chat Completions envelope) → HTTP request to real target
  * HTTP ReadableStream → SSE (Chat Completions chunks) back through AI Gateway
  *
- * The metadata (method, headers, etc.) arrives in messages[0] (system role).
- * The request body arrives in messages[1] (user role).
+ * Request metadata arrives as flat KV messages:
+ *   {role:'method', content:'GET'}, {role:'path', content:'/foo'}, ...
+ * The request body arrives in the message with role='user'.
  *
- * Response SSE uses Chat Completions chunk format with our internal protocol
- * (init/text/bin/done/error) JSON-encoded inside choices[0].delta.content.
+ * Response chunks use delta.role as the event type and delta.content
+ * as the value — no nested JSON. Init fields sent individually,
+ * terminated by {role:'init', content:'done'}.
  * Stream ends with data: [DONE].
  */
 
@@ -47,11 +49,26 @@ export default {
       return chatError(model, 'Missing messages array');
     }
 
-    // Extract metadata from system message, input from user message
-    let metadata;
-    try { metadata = JSON.parse(messages[0]?.content ?? '{}'); }
-    catch { metadata = {}; }
-    const input = messages.find(m => m.role === 'user')?.content ?? null;
+    // Extract metadata from flat KV messages
+    const metadata = { headers: {} };
+    let input = null;
+    for (const msg of messages) {
+      if (msg.role === 'user')  { input = msg.content; continue; }
+      if (msg.role.startsWith('header:')) {
+        metadata.headers[msg.role.slice(7)] = msg.content;
+        continue;
+      }
+      switch (msg.role) {
+        case 'method':       metadata.method = msg.content; break;
+        case 'url':          metadata.url = msg.content; break;
+        case 'path':         metadata.path = msg.content; break;
+        case 'search':       metadata.search = msg.content; break;
+        case 'request_id':   metadata.request_id = msg.content; break;
+        case 'content_type': metadata.content_type = msg.content; break;
+        case 'is_base64':    metadata.is_base64 = msg.content === 'true'; break;
+        case 'timestamp':    metadata.timestamp = msg.content; break;
+      }
+    }
 
     const targetUrl = resolveTarget(model, metadata, env);
     if (!targetUrl) return chatError(model, `No route for model: ${model}`);
@@ -90,8 +107,8 @@ export default {
 
     const enc = new TextEncoder();
 
-    /** Wrap an inner event as a Chat Completions SSE chunk. */
-    function sseChunk(innerEvt, finishReason) {
+    /** Emit a single SSE chunk with delta.role and delta.content. */
+    function sseChunk(role, content, finishReason) {
       const obj = {
         id: chunkId,
         object: 'chat.completion.chunk',
@@ -99,7 +116,7 @@ export default {
         model,
         choices: [{
           index: 0,
-          delta: { content: JSON.stringify(innerEvt) },
+          delta: { role, content },
           finish_reason: finishReason ?? null,
         }],
       };
@@ -113,22 +130,18 @@ export default {
 
     const pipePromise = (async () => {
       try {
-        // Role chunk (standard Chat Completions preamble)
-        streamController.enqueue(enc.encode(`data: ${JSON.stringify({
-          id: chunkId, object: 'chat.completion.chunk', created, model,
-          choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-        })}\n\n`));
+        const status = [101, 204, 205, 304].includes(targetRes.status) ? 200 : targetRes?.status ?? 200;
 
-        // init event
-        streamController.enqueue(sseChunk({
-          type: 'init',
-          status: [101, 204, 205, 304].includes(targetRes.status) ? 200 : targetRes?.status ?? 200,
-          headers: Object.fromEntries(targetRes.headers.entries()),
-          binary: isBinary,
-          model,
-          request_id: requestId,
-          target_url: targetUrl,
-        }));
+        // Init fields as individual KV chunks
+        streamController.enqueue(sseChunk('status',     String(status)));
+        for (const [k, v] of targetRes.headers.entries()) {
+          streamController.enqueue(sseChunk(`header:${k}`, v));
+        }
+        streamController.enqueue(sseChunk('binary',     String(isBinary)));
+        streamController.enqueue(sseChunk('model',      model));
+        streamController.enqueue(sseChunk('request_id', requestId));
+        streamController.enqueue(sseChunk('target_url', targetUrl));
+        streamController.enqueue(sseChunk('init',       'done'));
 
         if (targetRes.body) {
           const reader = targetRes.body.getReader();
@@ -136,23 +149,20 @@ export default {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            streamController.enqueue(sseChunk(isBinary
-              ? { type: 'bin',  chunk: u8ToBase64(value) }
-              : { type: 'text', chunk: dec.decode(value, { stream: true }) }
+            streamController.enqueue(sseChunk(
+              isBinary ? 'bin' : 'text',
+              isBinary ? u8ToBase64(value) : dec.decode(value, { stream: true })
             ));
           }
         }
 
         // done event with finish_reason
-        streamController.enqueue(sseChunk(
-          { type: 'done', ms: Date.now() - start },
-          'stop'
-        ));
+        streamController.enqueue(sseChunk('done', String(Date.now() - start), 'stop'));
 
         // [DONE] sentinel
         streamController.enqueue(enc.encode('data: [DONE]\n\n'));
       } catch (err) {
-        try { streamController.enqueue(sseChunk({ type: 'error', message: err.message })); } catch {}
+        try { streamController.enqueue(sseChunk('error', err.message)); } catch {}
         try { streamController.enqueue(enc.encode('data: [DONE]\n\n')); } catch {}
       } finally {
         try { streamController.close(); } catch {}
@@ -212,17 +222,20 @@ function chatError(model, message) {
   const created = Math.floor(Date.now() / 1000);
   const mdl     = model ?? 'unknown';
 
-  function chunk(content, finishReason) {
+  function chunk(role, content, finishReason) {
     return `data: ${JSON.stringify({
       id: chunkId, object: 'chat.completion.chunk', created, model: mdl,
-      choices: [{ index: 0, delta: { content: JSON.stringify(content) }, finish_reason: finishReason ?? null }],
+      choices: [{ index: 0, delta: { role, content }, finish_reason: finishReason ?? null }],
     })}\n\n`;
   }
 
   const lines = [
-    chunk({ type: 'init', status: 502, headers: {}, binary: false, model: mdl, request_id: null }),
-    chunk({ type: 'text', chunk: message }),
-    chunk({ type: 'done', ms: 0 }, 'stop'),
+    chunk('status', '502'),
+    chunk('binary', 'false'),
+    chunk('model', mdl),
+    chunk('init', 'done'),
+    chunk('text', message),
+    chunk('done', '0', 'stop'),
     'data: [DONE]\n\n',
   ].join('');
 
