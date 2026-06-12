@@ -77,7 +77,7 @@ async function onRequest(request, env) {
     messages.push({ role: `header:${k}`, content: v });
   }
   if (bodyText != null) {
-    messages.push({ role: 'user', content: bodyText });
+    messages.push({ role: 'body', content: bodyText });
   }
 
   const envelope = {
