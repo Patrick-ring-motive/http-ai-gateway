@@ -132,7 +132,7 @@ export default {
         // Init fields as individual KV chunks
         streamController.enqueue(sseChunk('status',     String(status)));
         for (const [k, v] of targetRes.headers.entries()) {
-          streamController.enqueue(sseChunk(`header:${k}`, v));
+          streamController.enqueue(sseChunk(k, v));
         }
         streamController.enqueue(sseChunk('binary',     String(isBinary)));
         streamController.enqueue(sseChunk('model',      model));
