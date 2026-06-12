@@ -5,10 +5,13 @@
  * SSE stream (Chat Completions chunks from upstream-worker-oai via gateway)
  *   → HTTP ReadableStream → client
  *
- * The metadata (method, headers, etc.) travels in a system message.
+ * Request metadata is sent as flat KV messages:
+ *   {role:'method', content:'GET'}, {role:'path', content:'/foo'}, ...
  * The request body travels in a user message.
- * Response chunks carry our internal protocol (init/text/bin/done/error)
- * JSON-encoded inside choices[0].delta.content.
+ *
+ * Response chunks use delta.role as the event type and delta.content
+ * as the value — no nested JSON. Init fields (status, headers, binary)
+ * arrive individually, terminated by {role:'init', content:'done'}.
  */
 
 const IS_TEXT = /text|html|script|xml|json|pdf/i;
@@ -59,22 +62,20 @@ async function onRequest(request, env) {
   );
   filteredHeaders['outbound-api-key'] = String(env.OUTBOUND_API_KEY);
 
-  // ── Chat Completions envelope ───────────────────────────────────────────
-  const metadata = {
-    method: request.method,
-    url: request.url,
-    path: url.pathname,
-    search: url.search,
-    headers: filteredHeaders,
-    request_id: requestId,
-    content_type: request.headers.get('content-type') ?? '',
-    is_base64: isBase64,
-    timestamp: new Date().toISOString(),
-  };
-
+  // ── Chat Completions envelope (flat KV messages) ────────────────────────
   const messages = [
-    { role: 'system', content: JSON.stringify(metadata) },
+    { role: 'method',       content: request.method },
+    { role: 'url',          content: request.url },
+    { role: 'path',         content: url.pathname },
+    { role: 'search',       content: url.search },
+    { role: 'request_id',   content: requestId },
+    { role: 'content_type', content: request.headers.get('content-type') ?? '' },
+    { role: 'is_base64',    content: String(isBase64) },
+    { role: 'timestamp',    content: new Date().toISOString() },
   ];
+  for (const [k, v] of Object.entries(filteredHeaders)) {
+    messages.push({ role: `header:${k}`, content: v });
+  }
   if (bodyText != null) {
     messages.push({ role: 'user', content: bodyText });
   }
@@ -117,8 +118,9 @@ async function onRequest(request, env) {
 
   // ── SSE (Chat Completions chunks) → HTTP ReadableStream ─────────────────
   //
-  // Parse Chat Completions SSE chunks, extract inner events from
-  // choices[0].delta.content, wait for 'init' inline, then stream the rest.
+  // Each SSE chunk carries delta.role (event type) and delta.content (value).
+  // Init fields (status, headers, binary) arrive as individual KV chunks,
+  // terminated by role='init'. Then text/bin chunks stream the body.
 
   const reader    = gatewayRes.body.getReader();
   const dec       = new TextDecoder();
@@ -127,7 +129,7 @@ async function onRequest(request, env) {
   let streamDone  = false;
   const pendingChunks = [];
 
-  /** Parse a Chat Completions SSE line into our inner event, or null. */
+  /** Parse a Chat Completions SSE line into {role, content}, or null. */
   function parseChunkLine(line) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('data:')) return null;
@@ -135,13 +137,13 @@ async function onRequest(request, env) {
     if (payload === '[DONE]') return null;
     try {
       const chunk = JSON.parse(payload);
-      const content = chunk?.choices?.[0]?.delta?.content;
-      if (!content) return null;
-      return JSON.parse(content);
+      const delta = chunk?.choices?.[0]?.delta;
+      if (!delta?.role) return null;
+      return { role: delta.role, content: delta.content ?? '' };
     } catch { return null; }
   }
 
-  /** Drain complete SSE events from buf and return parsed inner objects. */
+  /** Drain complete SSE events from buf and return parsed {role, content} objects. */
   function drainEvents() {
     const parts = buf.split('\n\n');
     buf = parts.pop() ?? '';
@@ -155,30 +157,40 @@ async function onRequest(request, env) {
     return out;
   }
 
-  // Read SSE until we receive the init event (status + headers).
-  let init;
-  while (!init) {
+  // Accumulate init fields until role='init' signals completion.
+  const init = { status: 502, headers: {}, binary: false };
+  let initDone = false;
+  while (!initDone) {
     const { done, value } = await reader.read();
     if (done) {
-      init = { status: 502, headers: {}, binary: false };
+      initDone = true;
       streamDone = true;
       break;
     }
     buf += dec.decode(value, { stream: true });
-    for (const evt of drainEvents()) {
-      switch (evt.type) {
+    for (const { role, content } of drainEvents()) {
+      if (role.startsWith('header:')) {
+        init.headers[role.slice(7)] = content;
+        continue;
+      }
+      switch (role) {
+        case 'status':
+          init.status = parseInt(content, 10) || 502;
+          break;
+        case 'binary':
+          init.binary = content === 'true';
+          break;
         case 'init':
-          init = evt;
+          initDone = true;
           break;
         case 'text':
-          pendingChunks.push(enc.encode(evt.chunk));
+          pendingChunks.push(enc.encode(content));
           break;
         case 'bin':
-          pendingChunks.push(base64ToU8(evt.chunk));
+          pendingChunks.push(base64ToU8(content));
           break;
         case 'error':
-          if (!init) init = { status: 502, headers: {}, binary: false };
-          pendingChunks.push(enc.encode(evt.message ?? 'upstream error'));
+          pendingChunks.push(enc.encode(content || 'upstream error'));
           break;
       }
     }
@@ -195,18 +207,18 @@ async function onRequest(request, env) {
         if (done) { controller.close(); return; }
         buf += dec.decode(value, { stream: true });
         let enqueued = false;
-        for (const evt of drainEvents()) {
-          switch (evt.type) {
+        for (const { role, content } of drainEvents()) {
+          switch (role) {
             case 'text':
-              controller.enqueue(enc.encode(evt.chunk));
+              controller.enqueue(enc.encode(content));
               enqueued = true;
               break;
             case 'bin':
-              controller.enqueue(base64ToU8(evt.chunk));
+              controller.enqueue(base64ToU8(content));
               enqueued = true;
               break;
             case 'error':
-              controller.enqueue(enc.encode(evt.message ?? 'upstream error'));
+              controller.enqueue(enc.encode(content || 'upstream error'));
               enqueued = true;
               break;
           }
