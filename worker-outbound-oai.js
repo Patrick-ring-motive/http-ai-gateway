@@ -53,12 +53,9 @@ export default {
     const metadata = { headers: {} };
     let input = null;
     for (const msg of messages) {
-      if (msg.role === 'user')  { input = msg.content; continue; }
-      if (msg.role.startsWith('header:')) {
-        metadata.headers[msg.role.slice(7)] = msg.content;
-        continue;
-      }
       switch (msg.role) {
+        case 'body':         input = msg.content; break;
+        case 'header':       metadata.headers[msg.name] = msg.content; break;
         case 'method':       metadata.method = msg.content; break;
         case 'url':          metadata.url = msg.content; break;
         case 'path':         metadata.path = msg.content; break;
