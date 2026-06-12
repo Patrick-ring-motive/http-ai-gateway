@@ -20,7 +20,7 @@ const HOP_BY_HOP = new Set([
   'connection','keep-alive','proxy-authenticate','proxy-authorization',
   'te','trailers','transfer-encoding','upgrade',
   'host','cf-connecting-ip','cf-ray','cf-visitor','cf-ipcountry',
-  'x-forwarded-for','x-forwarded-proto','x-real-ip',
+  'x-forwarded-for','x-forwarded-proto','x-real-ip','body'
 ]);
 
 export default {
@@ -227,9 +227,9 @@ async function onRequest(request, env) {
   });
 
   const resHeaders = new Headers();
-  for (const [k, v] of Object.entries(init.headers ?? {})) {
+  for (const [k, v] of Object.entries(init.headers ?? {})) {try{
     if (!HOP_BY_HOP.has(k.toLowerCase())) resHeaders.set(k, v);
-  }
+  }catch{}}
   resHeaders.set('x-bridge-request-id', requestId);
   resHeaders.set('x-bridge-model', modelName);
   if (/^(?:text\/plain|undefined)/i.test(resHeaders.get('content-type'))) {
