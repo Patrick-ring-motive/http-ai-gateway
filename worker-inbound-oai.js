@@ -74,7 +74,7 @@ async function onRequest(request, env) {
     { role: 'timestamp',    content: new Date().toISOString() },
   ];
   for (const [k, v] of Object.entries(filteredHeaders)) {
-    messages.push({ role: `header:${k}`, content: v });
+    messages.push({ role: `header`, name:k, content: v });
   }
   if (bodyText != null) {
     messages.push({ role: 'body', content: bodyText });
