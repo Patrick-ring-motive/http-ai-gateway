@@ -86,6 +86,7 @@ export default {
           ...(env.AI_GATEWAY_TOKEN
             ? { 'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}` }
             : {}),
+          'User-Agent':String(env.TARGET_BASE_URL)
         },
         body: JSON.stringify(envelope),
       });
@@ -204,8 +205,6 @@ export default {
       headers: resHeaders,
     });
 };
-
-// ── codec ──────────────────────────────────────────────────────────────────────
 
 function u8ToBase64(u8) {
   let s = '';
