@@ -45,7 +45,7 @@ export default {
 
     const { model, messages } = payload;
     if (!model) return chatError(null, 'Missing model field');
-    if (!Array.isArray(messages) || messages.length === 0) {
+    if (!messages?.length) {
       return chatError(model, 'Missing messages array');
     }
 
@@ -121,6 +121,24 @@ export default {
       return enc.encode(`data: ${JSON.stringify(obj)}\n\n`);
     }
 
+    function sseChunks(input) {
+      const out = [];
+      const len = input.length;
+      for(let i = 0; i !== len; ++i){
+        let [name, content, finishReason,role] = input[i];
+        role ??= 'assistant';
+        out.push({ index: i, delta: { role, content, tool_calls:{index:0,function:{name}}},finish_reason: finishReason ?? null });
+      }
+      const obj = {
+        id: chunkId,
+        object: 'chat.completion.chunk',
+        created,
+        model,
+        choices: out,
+      };
+      return enc.encode(`data: ${JSON.stringify(obj)}\n\n`);
+    }
+
     let streamController;
     const readable = new ReadableStream({
       start(c) { streamController = c; },
@@ -129,18 +147,18 @@ export default {
     const pipePromise = (async () => {
       try {
         const status = [101, 204, 205, 304].includes(targetRes.status) ? 200 : targetRes?.status ?? 200;
-
+        const chunks = [];
         // Init fields as individual KV chunks
-        streamController.enqueue(sseChunk('status',     String(status)));
+        chunks.push(['status',     String(status)]);
         for (const [k, v] of targetRes.headers.entries()) {
-          streamController.enqueue(sseChunk(k, v,null,'system'));
+          chunks.push([k, v,null,'system']);
         }
-        streamController.enqueue(sseChunk('binary',     String(isBinary)));
-        streamController.enqueue(sseChunk('model',      model));
-        streamController.enqueue(sseChunk('request_id', requestId));
-        streamController.enqueue(sseChunk('target_url', targetUrl));
-        streamController.enqueue(sseChunk('init',       'done'));
-
+        chunks.push(['binary',     String(isBinary)]);
+        chunks.push(['model',      model]);
+        chunks.push(['request_id', requestId]);
+        chunks.push(['target_url', targetUrl]);
+        chunks.push(['init',       'done']);
+        streamController.enqueue(sseChunks(chunks));
         if (targetRes.body) {
           const reader = targetRes.body.getReader();
           const dec = new TextDecoder();
@@ -227,13 +245,27 @@ function chatError(model, message) {
     })}\n\n`;
   }
 
+  function chunks(input) {
+    const out = [];
+    const len = input.length;
+    for(let i = 0; i !== len; ++i){
+      let [name, content, finishReason,role] = input[i];
+      role ??= 'assistant';
+      out.push({ index: i, delta: { role, content, tool_calls:{index:0,function:{name}}},finish_reason: finishReason ?? null });
+    }
+    return `data: ${JSON.stringify({
+      id: chunkId, object: 'chat.completion.chunk', created, model: mdl,
+      choices: out,
+    })}\n\n`;
+  }
+
   const lines = [
-    chunk('status', '502'),
-    chunk('binary', 'false'),
-    chunk('model', mdl),
-    chunk('init', 'done'),
-    chunk('text', message),
-    chunk('done', '0', 'stop'),
+    chunks([['status', '502'],
+    ['binary', 'false'],
+    ['model', mdl],
+    ['init', 'done'],
+    ['text', message],
+    ['done', '0', 'stop']]),
     'data: [DONE]\n\n',
   ].join('');
 
