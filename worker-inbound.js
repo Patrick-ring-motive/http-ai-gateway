@@ -196,7 +196,7 @@ export default {
     }
     resHeaders.set('x-bridge-request-id', requestId);
     resHeaders.set('x-bridge-model', modelName);
-    if(!ct||/^text\/plain/i.test(resHeaders.get('content-type'))){
+    if(/^(text\/plain|null|undefined)/i.test(resHeaders.get('content-type'))){
       resHeaders.set('content-type','text/html');
     }
     // Return streaming response — body fills as SSE chunks arrive
