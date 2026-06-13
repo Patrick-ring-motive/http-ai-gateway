@@ -196,8 +196,18 @@ export default {
     }
     resHeaders.set('x-bridge-request-id', requestId);
     resHeaders.set('x-bridge-model', modelName);
-    if(/^(text\/plain|null|undefined)/i.test(resHeaders.get('content-type'))){
+    if(/^(text\/plain|null|undefined)|json/i.test(resHeaders.get('content-type'))){
       resHeaders.set('content-type','text/html');
+    }
+    if(/script/i.test(resHeaders.get('content-type'))){
+      if(request.headers.get('accept') !== `*/*`){
+        resHeaders.set('content-type','text/html');
+      }
+    }
+    if(/^text\/css/i.test(resHeaders.get('content-type'))){
+      if(!/^text\/css/i.test(request.headers.get('accept'))){
+        resHeaders.set('content-type','text/html');
+      }
     }
     // Return streaming response — body fills as SSE chunks arrive
     return new Response(readable, {
