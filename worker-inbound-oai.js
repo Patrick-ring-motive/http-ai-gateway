@@ -10,7 +10,7 @@
  * The request body travels in a user message.
  *
  * Response chunks use delta.role as the event type and delta.content
- * as the value — no nested JSON. Init fields (status, headers, binary)
+ * as the value — no nested JSON. Init fields (status, headers, bytes)
  * arrive individually, terminated by {role:'init', content:'done'}.
  */
 
@@ -119,7 +119,7 @@ async function onRequest(request, env) {
   // ── SSE (Chat Completions chunks) → HTTP ReadableStream ─────────────────
   //
   // Each SSE chunk carries delta.role (event type) and delta.content (value).
-  // Init fields (status, headers, binary) arrive as individual KV chunks,
+  // Init fields (status, headers, bytes) arrive as individual KV chunks,
   // terminated by role='init'. Then text/bin chunks stream the body.
 
   const reader    = gatewayRes.body.getReader();
@@ -162,7 +162,7 @@ async function onRequest(request, env) {
   }
 
   // Accumulate init fields until role='init' signals completion.
-  const init = { status: 502, headers: {}, binary: false };
+  const init = { status: 502, headers: {}, bytes: false };
   let initDone = false;
   while (!initDone) {
     const { done, value } = await reader.read();
@@ -182,8 +182,8 @@ async function onRequest(request, env) {
         case 'status':
           init.status = parseInt(content, 10) || 502;
           break;
-        case 'binary':
-          init.binary = content === 'true';
+        case 'bytes':
+          init.bytes = content === 'true';
           break;
         case 'init':
           initDone = true;
