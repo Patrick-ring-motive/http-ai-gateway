@@ -6,7 +6,7 @@
  *
  * Waits for the 'init' SSE event to learn status + headers, then returns a
  * streaming Response whose body is piped live from subsequent text/bin events.
- * Binary chunks are individually base64-decoded and written as raw bytes.
+ * bytes chunks are individually base64-decoded and written as raw bytes.
  */
 
 const IS_TEXT = /text|html|script|xml|json|pdf/i;
@@ -134,7 +134,7 @@ export default {
     while (!init) {
       const { done, value } = await reader.read();
       if (done) {
-        init = { status: 502, headers: {}, binary: false };
+        init = { status: 502, headers: {}, bytes: false };
         streamDone = true;
         break;
       }
@@ -151,7 +151,7 @@ export default {
             pendingChunks.push(base64ToU8(evt.chunk));
             break;
           case 'error':
-            if (!init) init = { status: 502, headers: {}, binary: false };
+            if (!init) init = { status: 502, headers: {}, bytes: false };
             pendingChunks.push(enc.encode(evt.message ?? 'upstream error'));
             break;
         }
