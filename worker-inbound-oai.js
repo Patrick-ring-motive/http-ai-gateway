@@ -64,20 +64,20 @@ async function onRequest(request, env) {
 
   // ── Chat Completions envelope (flat KV messages) ────────────────────────
   const messages = [
-    { role: 'method',       content: request.method },
-    { role: 'url',          content: request.url },
-    { role: 'path',         content: url.pathname },
-    { role: 'search',       content: url.search },
-    { role: 'request_id',   content: requestId },
-    { role: 'content_type', content: request.headers.get('content-type') ?? '' },
-    { role: 'is_base64',    content: String(isBase64) },
-    { role: 'timestamp',    content: new Date().toISOString() },
+    { role: 'user', name: 'method',       content: request.method },
+    { role: 'user', name: 'url',          content: request.url },
+    { role: 'user', name: 'path',         content: url.pathname },
+    { role: 'user', name: 'search',       content: url.search },
+    { role: 'user', name: 'request_id',   content: requestId },
+    { role: 'user', name: 'content_type', content: request.headers.get('content-type') ?? '' },
+    { role: 'user', name: 'is_base64',    content: String(isBase64) },
+    { role: 'user', name: 'timestamp',    content: new Date().toISOString() },
   ];
   for (const [k, v] of Object.entries(filteredHeaders)) {
-    messages.push({ role: `header`, name:k, content: v });
+    messages.push({ role: 'system', name: `header`, name:k, content: v });
   }
   if (bodyText != null) {
-    messages.push({ role: 'body', content: bodyText });
+    messages.push({ role: 'user', name: 'body', content: bodyText });
   }
 
   const envelope = {
