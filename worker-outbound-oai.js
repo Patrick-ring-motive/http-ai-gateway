@@ -106,7 +106,7 @@ export default {
     const enc = new TextEncoder();
 
     /** Emit a single SSE chunk with delta.role and delta.content. */
-    function sseChunk(role, content, finishReason) {
+    function sseChunk(name, content, finishReason,role='assistant') {
       const obj = {
         id: chunkId,
         object: 'chat.completion.chunk',
@@ -114,7 +114,7 @@ export default {
         model,
         choices: [{
           index: 0,
-          delta: { role, content },
+          delta: { role, content, tool_calls:{index:0,function:{name}}},
           finish_reason: finishReason ?? null,
         }],
       };
@@ -133,7 +133,7 @@ export default {
         // Init fields as individual KV chunks
         streamController.enqueue(sseChunk('status',     String(status)));
         for (const [k, v] of targetRes.headers.entries()) {
-          streamController.enqueue(sseChunk(k, v));
+          streamController.enqueue(sseChunk(k, v,null,'system'));
         }
         streamController.enqueue(sseChunk('binary',     String(isBinary)));
         streamController.enqueue(sseChunk('model',      model));
