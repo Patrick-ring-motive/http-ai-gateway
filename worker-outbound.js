@@ -5,9 +5,9 @@
  * HTTP ReadableStream → SSE back through AI Gateway
  *
  * SSE event schema:
- *   init  {type, status, headers, binary, model, request_id, target_url}
+ *   init  {type, status, headers, bytes, model, request_id, target_url}
  *   text  {type, chunk: string}
- *   bin   {type, chunk: base64}   — binary payloads, per-chunk encoded
+ *   bin   {type, chunk: base64}   — bytes payloads, per-chunk encoded
  *   done  {type, ms: number}
  *   error {type, message: string}
  *
@@ -74,7 +74,7 @@ export default {
     }
 
     const ct = targetRes.headers.get('content-type') ?? '';
-    const isBinary = !IS_TEXT.test(ct);
+    const isBytes = !IS_TEXT.test(ct);
 
     const enc = new TextEncoder();
     const sseEncode = (obj) => enc.encode(`data: ${JSON.stringify(obj)}\n\n`);
@@ -90,7 +90,7 @@ export default {
           type: 'init',
           status: [101, 204, 205, 304].includes(targetRes.status) ? 200 : targetRes?.status ?? 200,
           headers: Object.fromEntries(targetRes.headers.entries()),
-          binary: isBinary,
+          bytes: isBytes,
           model,
           request_id: metadata?.request_id ?? null,
           target_url: targetUrl,
@@ -102,7 +102,7 @@ export default {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            streamController.enqueue(sseEncode(isBinary
+            streamController.enqueue(sseEncode(isBytes
               ? { type: 'bin',  chunk: u8ToBase64(value) }
               : { type: 'text', chunk: dec.decode(value, { stream: true }) }
             ));
@@ -171,7 +171,7 @@ function buildUrl(base, metadata) {
 /** Always emits init first so worker-inbound's initP always resolves. */
 function sseError(model, message) {
   const lines = [
-    `data: ${JSON.stringify({ type: 'init', status: 502, headers: {}, binary: false, model: model ?? 'unknown', request_id: null })}\n\n`,
+    `data: ${JSON.stringify({ type: 'init', status: 502, headers: {}, bytes: false, model: model ?? 'unknown', request_id: null })}\n\n`,
     `data: ${JSON.stringify({ type: 'text', chunk: message })}\n\n`,
     `data: ${JSON.stringify({ type: 'done', ms: 0 })}\n\n`,
   ].join('');
