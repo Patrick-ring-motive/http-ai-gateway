@@ -139,7 +139,7 @@ async function onRequest(request, env) {
       const chunk = JSON.parse(payload);
       const delta = chunk?.choices?.[0]?.delta;
       if (!delta?.role) return null;
-      return { role: delta.role, content: delta.content ?? '' };
+      return { role: delta.role, content: delta.content ?? '', name:delta?.tool_calls?.["function"]?.name??'' };
     } catch { return null; }
   }
 
@@ -168,8 +168,13 @@ async function onRequest(request, env) {
       break;
     }
     buf += dec.decode(value, { stream: true });
-    for (const { role, content } of drainEvents()) {
-      switch (role) {
+    for (const { role, content,name } of drainEvents()) {
+      if(role ==='system'){
+        init.headers[name] = content;
+        continue;
+      }
+      if(role !== 'assistant')continue;
+      switch (name) {
         case 'status':
           init.status = parseInt(content, 10) || 502;
           break;
@@ -188,8 +193,6 @@ async function onRequest(request, env) {
         case 'error':
           pendingChunks.push(enc.encode(content || 'upstream error'));
           break;
-        default:
-          init.headers[role] = content;
       }
     }
   }
