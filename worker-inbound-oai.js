@@ -120,7 +120,7 @@ async function onRequest(request, env) {
   //
   // Each SSE chunk carries delta.role (event type) and delta.content (value).
   // Init fields (status, headers, bytes) arrive as individual KV chunks,
-  // terminated by role='init'. Then text/bin chunks stream the body.
+  // terminated by role='init'. Then text/buffer chunks stream the body.
 
   const reader    = gatewayRes.body.getReader();
   const dec       = new TextDecoder();
@@ -191,7 +191,7 @@ async function onRequest(request, env) {
         case 'text':
           pendingChunks.push(enc.encode(content));
           break;
-        case 'bin':
+        case 'buffer':
           pendingChunks.push(base64ToU8(content));
           break;
         case 'error':
@@ -218,7 +218,7 @@ async function onRequest(request, env) {
               controller.enqueue(enc.encode(content));
               enqueued = true;
               break;
-            case 'bin':
+            case 'buffer':
               controller.enqueue(base64ToU8(content));
               enqueued = true;
               break;
@@ -259,9 +259,9 @@ function u8ToBase64(u8) {
 }
 
 function base64ToU8(b64) {
-  const bin = atob(b64);
-  const u8  = new Uint8Array(bin.length);
-  const len = bin.length;
-  for (let i = 0; i !== len; ++i) u8[i] = bin.charCodeAt(i);
+  const buffer = atob(b64);
+  const u8  = new Uint8Array(buffer.length);
+  const len = buffer.length;
+  for (let i = 0; i !== len; ++i) u8[i] = buffer.charCodeAt(i);
   return u8;
 }
