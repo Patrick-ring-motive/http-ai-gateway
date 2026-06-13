@@ -97,7 +97,7 @@ export default {
     }
 
     const ct = targetRes.headers.get('content-type') ?? '';
-    const isBinary = !IS_TEXT.test(ct);
+    const isBytes = !IS_TEXT.test(ct);
 
     const requestId = metadata?.request_id ?? crypto.randomUUID();
     const chunkId   = `chatcmpl-${requestId}`;
@@ -153,7 +153,7 @@ export default {
         for (const [k, v] of targetRes.headers.entries()) {
           chunks.push([k, v,null,'system']);
         }
-        chunks.push(['binary',     String(isBinary)]);
+        chunks.push(['bytes',     String(isBytes)]);
         chunks.push(['model',      model]);
         chunks.push(['request_id', requestId]);
         chunks.push(['target_url', targetUrl]);
@@ -166,8 +166,8 @@ export default {
             const { done, value } = await reader.read();
             if (done) break;
             streamController.enqueue(sseChunk(
-              isBinary ? 'bin' : 'text',
-              isBinary ? u8ToBase64(value) : dec.decode(value, { stream: true })
+              isBytes ? 'buffer' : 'text',
+              isBytes ? u8ToBase64(value) : dec.decode(value, { stream: true })
             ));
           }
         }
@@ -261,7 +261,7 @@ function chatError(model, message) {
 
   const lines = [
     chunks([['status', '502'],
-    ['binary', 'false'],
+    ['bytes', 'false'],
     ['model', mdl],
     ['init', 'done'],
     ['text', message],
@@ -285,9 +285,9 @@ function u8ToBase64(u8) {
 }
 
 function base64ToU8(b64) {
-  const bin = atob(b64);
-  const u8  = new Uint8Array(bin.length);
-  const len = bin.length;
-  for (let i = 0; i !== len; ++i) u8[i] = bin.charCodeAt(i);
+  const buffer = atob(b64);
+  const u8  = new Uint8Array(buffer.length);
+  const len = buffer.length;
+  for (let i = 0; i !== len; ++i) u8[i] = buffer.charCodeAt(i);
   return u8;
 }
