@@ -74,7 +74,7 @@ async function onRequest(request, env) {
     { role: 'user', name: 'timestamp',    content: new Date().toISOString() },
   ];
   for (const [k, v] of Object.entries(filteredHeaders)) {
-    messages.push({ role: 'system', name: `header`, name:k, content: v });
+    messages.push({ role: 'system', name:k, content: v });
   }
   if (bodyText != null) {
     messages.push({ role: 'user', name: 'body', content: bodyText });
@@ -155,7 +155,7 @@ async function onRequest(request, env) {
     for (const part of parts) {
       for (const line of part.split('\n')) {
         const evts = parseChunkLine(line);
-        out.push(...evt);
+        out.push(...evts);
       }
     }
     return out;
@@ -172,7 +172,7 @@ async function onRequest(request, env) {
       break;
     }
     buf += dec.decode(value, { stream: true });
-    for (const { role, content,name } of drainEvents()) {
+    for (const { role, content, name } of drainEvents()) {
       if(role ==='system'){
         init.headers[name] = content;
         continue;
@@ -212,8 +212,8 @@ async function onRequest(request, env) {
         if (done) { controller.close(); return; }
         buf += dec.decode(value, { stream: true });
         let enqueued = false;
-        for (const { role, content } of drainEvents()) {
-          switch (role) {
+        for (const { name, content } of drainEvents()) {
+          switch (name) {
             case 'text':
               controller.enqueue(enc.encode(content));
               enqueued = true;
