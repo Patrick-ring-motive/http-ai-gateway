@@ -132,15 +132,19 @@ async function onRequest(request, env) {
   /** Parse a Chat Completions SSE line into {role, content}, or null. */
   function parseChunkLine(line) {
     const trimmed = line.trim();
-    if (!trimmed.startsWith('data:')) return null;
+    if (!trimmed.startsWith('data:')) return [];
     const payload = trimmed.slice(5).trim();
-    if (payload === '[DONE]') return null;
+    if (payload === '[DONE]') return [];
     try {
+      const msgs = [];
       const chunk = JSON.parse(payload);
-      const delta = chunk?.choices?.[0]?.delta;
-      if (!delta?.role) return null;
-      return { role: delta.role, content: delta.content ?? '', name:delta?.tool_calls?.["function"]?.name??'' };
-    } catch { return null; }
+      for(const choice of chunk?.choices??[]){
+        const delta = choice?.delta;
+        if (!delta?.role) continue;
+        msgs.push({ role: delta.role, content: delta.content ?? '', name:delta?.tool_calls?.["function"]?.name??'' });
+      }
+      return msgs;
+    } catch { return []; }
   }
 
   /** Drain complete SSE events from buf and return parsed {role, content} objects. */
@@ -150,8 +154,8 @@ async function onRequest(request, env) {
     const out = [];
     for (const part of parts) {
       for (const line of part.split('\n')) {
-        const evt = parseChunkLine(line);
-        if (evt) out.push(evt);
+        const evts = parseChunkLine(line);
+        out.push(...evt);
       }
     }
     return out;
