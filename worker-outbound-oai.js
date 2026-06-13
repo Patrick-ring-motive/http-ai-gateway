@@ -53,7 +53,7 @@ export default {
     const metadata = { headers: {} };
     let input = null;
     for (const msg of messages) {
-      if(msg.role === 'system') metadata.headers[msg.name] = msg.content; continue;
+      if(msg.role === 'system') {metadata.headers[msg.name] = msg.content; continue;}
       if(msg.role !== 'user') continue;
       switch (msg.name) {
         case 'body':         input = msg.content; break;
@@ -223,7 +223,7 @@ function chatError(model, message) {
   function chunk(name, content, finishReason,role='assistant') {
     return `data: ${JSON.stringify({
       id: chunkId, object: 'chat.completion.chunk', created, model: mdl,
-      choices: [{ index: 0, delta: { role, content, tool_calls:{index:0,function:{name}}},}, finish_reason: finishReason ?? null }],
+      choices: [{ index: 0, delta: { role, content, tool_calls:{index:0,function:{name}}},finish_reason: finishReason ?? null }],
     })}\n\n`;
   }
 
