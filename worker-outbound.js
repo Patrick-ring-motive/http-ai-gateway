@@ -7,7 +7,7 @@
  * SSE event schema:
  *   init  {type, status, headers, bytes, model, request_id, target_url}
  *   text  {type, chunk: string}
- *   bin   {type, chunk: base64}   — bytes payloads, per-chunk encoded
+ *   blob   {type, chunk: base64}   — bytes payloads, per-chunk encoded
  *   done  {type, ms: number}
  *   error {type, message: string}
  *
@@ -103,7 +103,7 @@ export default {
             const { done, value } = await reader.read();
             if (done) break;
             streamController.enqueue(sseEncode(isBytes
-              ? { type: 'bin',  chunk: u8ToBase64(value) }
+              ? { type: 'blob',  chunk: u8ToBase64(value) }
               : { type: 'text', chunk: dec.decode(value, { stream: true }) }
             ));
           }
@@ -191,9 +191,9 @@ function u8ToBase64(u8) {
 }
 
 function base64ToU8(b64) {
-  const bin = atob(b64);
-  const u8  = new Uint8Array(bin.length);
-  const len = bin.length;
-  for (let i = 0; i !== len; ++i) u8[i] = bin.charCodeAt(i);
+  const blob = atob(b64);
+  const u8  = new Uint8Array(blob.length);
+  const len = blob.length;
+  for (let i = 0; i !== len; ++i) u8[i] = blob.charCodeAt(i);
   return u8;
 }
