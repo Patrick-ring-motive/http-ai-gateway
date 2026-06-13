@@ -114,7 +114,7 @@ export default {
         model,
         choices: [{
           index: 0,
-          delta: { role, content, tool_calls:{index:0,function:{name}}},
+          delta: { role, content, tool_calls:[{index:0,function:{name}}]},
           finish_reason: finishReason ?? null,
         }],
       };
@@ -127,7 +127,7 @@ export default {
       for(let i = 0; i !== len; ++i){
         let [name, content, finishReason,role] = input[i];
         role ??= 'assistant';
-        out.push({ index: i, delta: { role, content, tool_calls:{index:0,function:{name}}},finish_reason: finishReason ?? null });
+        out.push({ index: i, delta: { role, content, tool_calls:[{index:0,function:{name}}]},finish_reason: finishReason ?? null });
       }
       const obj = {
         id: chunkId,
@@ -241,7 +241,7 @@ function chatError(model, message) {
   function chunk(name, content, finishReason,role='assistant') {
     return `data: ${JSON.stringify({
       id: chunkId, object: 'chat.completion.chunk', created, model: mdl,
-      choices: [{ index: 0, delta: { role, content, tool_calls:{index:0,function:{name}}},finish_reason: finishReason ?? null }],
+      choices: [{ index: 0, delta: { role, content, tool_calls:[{index:0,function:{name}}]},finish_reason: finishReason ?? null }],
     })}\n\n`;
   }
 
@@ -251,7 +251,7 @@ function chatError(model, message) {
     for(let i = 0; i !== len; ++i){
       let [name, content, finishReason,role] = input[i];
       role ??= 'assistant';
-      out.push({ index: i, delta: { role, content, tool_calls:{index:0,function:{name}}},finish_reason: finishReason ?? null });
+      out.push({ index: i, delta: { role, content, tool_calls:[{index:0,function:{name}}]},finish_reason: finishReason ?? null });
     }
     return `data: ${JSON.stringify({
       id: chunkId, object: 'chat.completion.chunk', created, model: mdl,
