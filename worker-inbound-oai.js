@@ -141,7 +141,7 @@ async function onRequest(request, env) {
       for(const choice of chunk?.choices??[]){
         const delta = choice?.delta;
         if (!delta?.role) continue;
-        msgs.push({ role: delta.role, content: delta.content ?? '', name:delta?.tool_calls?.["function"]?.name??'' });
+        msgs.push({ role: delta.role, content: delta.content ?? '', name:delta?.tool_calls?.[0]?.["function"]?.name??'' });
       }
       return msgs;
     } catch { return []; }
