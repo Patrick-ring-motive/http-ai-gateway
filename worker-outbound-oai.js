@@ -166,7 +166,7 @@ export default {
             const { done, value } = await reader.read();
             if (done) break;
             streamController.enqueue(sseChunk(
-              isBytes ? 'buffer' : 'text',
+              isBytes ? 'blob' : 'text',
               isBytes ? u8ToBase64(value) : dec.decode(value, { stream: true })
             ));
           }
@@ -285,9 +285,9 @@ function u8ToBase64(u8) {
 }
 
 function base64ToU8(b64) {
-  const buffer = atob(b64);
-  const u8  = new Uint8Array(buffer.length);
-  const len = buffer.length;
-  for (let i = 0; i !== len; ++i) u8[i] = buffer.charCodeAt(i);
+  const blob = atob(b64);
+  const u8  = new Uint8Array(blob.length);
+  const len = blob.length;
+  for (let i = 0; i !== len; ++i) u8[i] = blob.charCodeAt(i);
   return u8;
 }
