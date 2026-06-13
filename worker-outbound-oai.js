@@ -53,9 +53,9 @@ export default {
     const metadata = { headers: {} };
     let input = null;
     for (const msg of messages) {
-      switch (msg.role) {
+      if(msg.role === 'system') metadata.headers[msg.name] = msg.content; continue;
+      switch (msg.name) {
         case 'body':         input = msg.content; break;
-        case 'header':       metadata.headers[msg.name] = msg.content; break;
         case 'method':       metadata.method = msg.content; break;
         case 'url':          metadata.url = msg.content; break;
         case 'path':         metadata.path = msg.content; break;
