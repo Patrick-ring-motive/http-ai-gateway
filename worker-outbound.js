@@ -14,35 +14,45 @@
  * error always emits a synthetic init first so inbound never hangs on initP.
  */
 
-const newResponse = (...args) =>{
-  try{
+const newResponse = (...args) => {
+  try {
     return new Response(...args);
-  }catch(e){
-    if(e?.message === 'Response with null body status (101, 204, 205, or 304) cannot have a body.'){
-      return new Response(null,...args.slice(1));
+  } catch (e) {
+    if (e?.message === 'Response with null body status (101, 204, 205, or 304) cannot have a body.') {
+      return new Response(null, ...args.slice(1));
     }
-    return new Response(String(e),{status:500,statusText:String(e)});
+    return new Response(String(e), {
+      status: 500,
+      statusText: String(e)
+    });
   }
 };
 
 const IS_TEXT = /text|html|script|xml|json|pdf/i;
 
 const HOP_BY_HOP = new Set([
-  'connection','keep-alive','proxy-authenticate','proxy-authorization',
-  'te','trailers','transfer-encoding','upgrade',
-  'host','cf-connecting-ip','cf-ray','cf-visitor','cf-ipcountry',
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailers', 'transfer-encoding', 'upgrade',
+  'host', 'cf-connecting-ip', 'cf-ray', 'cf-visitor', 'cf-ipcountry',
 ]);
 
 export default {
   async fetch(request, env, ctx) {
-    if(request.headers.get('authorization') !== `Bearer ${env.CF_AIG_AUTHORIZATION}`){
-      return sseError(null,'AI Gateway unauthorized');
+    if (request.headers.get('authorization') !== `Bearer ${env.CF_AIG_AUTHORIZATION}`) {
+      return sseError(null, 'AI Gateway unauthorized');
     }
     let payload;
-    try { payload = await request.json(); }
-    catch { return sseError(null, 'Invalid JSON body'); }
+    try {
+      payload = await request.json();
+    } catch {
+      return sseError(null, 'Invalid JSON body');
+    }
 
-    const { model, input, metadata } = payload;
+    const {
+      model,
+      input,
+      metadata
+    } = payload;
     if (!model) return sseError(null, 'Missing model field');
 
     const targetUrl = resolveTarget(model, metadata, env);
@@ -53,7 +63,7 @@ export default {
       if (!HOP_BY_HOP.has(k.toLowerCase())) fwdHeaders.set(k, v);
     }
 
-    if(fwdHeaders.get('outbound-api-key') !== env.OUTBOUND_API_KEY){
+    if (fwdHeaders.get('outbound-api-key') !== env.OUTBOUND_API_KEY) {
       return sseError(null, 'Missing outbound api key');
     }
 
@@ -67,7 +77,10 @@ export default {
     let targetRes;
     try {
       targetRes = await fetch(targetUrl, {
-        method, headers: fwdHeaders, body: fwdBody, redirect: 'follow',
+        method,
+        headers: fwdHeaders,
+        body: fwdBody,
+        redirect: 'follow',
       });
     } catch (err) {
       return sseError(model, `Target unreachable: ${err.message}`);
@@ -81,7 +94,9 @@ export default {
 
     let streamController;
     const readable = new ReadableStream({
-      start(c) { streamController = c; },
+      start(c) {
+        streamController = c;
+      },
     });
 
     const pipePromise = (async () => {
@@ -100,20 +115,41 @@ export default {
           const reader = targetRes.body.getReader();
           const dec = new TextDecoder();
           while (true) {
-            const { done, value } = await reader.read();
+            const {
+              done,
+              value
+            } = await reader.read();
             if (done) break;
-            streamController.enqueue(sseEncode(isBytes
-              ? { type: 'blob',  chunk: u8ToBase64(value) }
-              : { type: 'text', chunk: dec.decode(value, { stream: true }) }
+            streamController.enqueue(sseEncode(isBytes ?
+              {
+                type: 'blob',
+                chunk: u8ToBase64(value)
+              } :
+              {
+                type: 'text',
+                chunk: dec.decode(value, {
+                  stream: true
+                })
+              }
             ));
           }
         }
 
-        streamController.enqueue(sseEncode({ type: 'done', ms: Date.now() - start }));
+        streamController.enqueue(sseEncode({
+          type: 'done',
+          ms: Date.now() - start
+        }));
       } catch (err) {
-        try { streamController.enqueue(sseEncode({ type: 'error', message: err.message })); } catch {}
+        try {
+          streamController.enqueue(sseEncode({
+            type: 'error',
+            message: err.message
+          }));
+        } catch {}
       } finally {
-        try { streamController.close(); } catch {}
+        try {
+          streamController.close();
+        } catch {}
       }
     })();
 
@@ -135,13 +171,18 @@ export default {
 function resolveTarget(model, metadata, env) {
   if (env.ROUTES) {
     let table;
-    try { table = JSON.parse(env.ROUTES); } catch { /* bad JSON */ }
+    try {
+      table = JSON.parse(env.ROUTES);
+    } catch {
+      /* bad JSON */ }
     if (table) {
       if (table[model]) return buildUrl(table[model], metadata);
-      let best = null, bestLen = -1;
+      let best = null,
+        bestLen = -1;
       for (const [prefix, url] of Object.entries(table)) {
         if (model.startsWith(prefix + '.') && prefix.length > bestLen) {
-          best = url; bestLen = prefix.length;
+          best = url;
+          bestLen = prefix.length;
         }
       }
       if (best) return buildUrl(best, metadata);
@@ -177,7 +218,10 @@ function sseError(model, message) {
   ].join('');
   return newResponse(lines, {
     status: 500,
-    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache'
+    },
   });
 }
 
@@ -192,7 +236,7 @@ function u8ToBase64(u8) {
 
 function base64ToU8(b64) {
   const blob = atob(b64);
-  const u8  = new Uint8Array(blob.length);
+  const u8 = new Uint8Array(blob.length);
   const len = blob.length;
   for (let i = 0; i !== len; ++i) u8[i] = blob.charCodeAt(i);
   return u8;
