@@ -144,11 +144,9 @@ async function onRequest(request, env) {
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
-        ...(env.AI_GATEWAY_TOKEN ?
-          {
-            'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}`
-          } :
-          {}),
+        ...(env.AI_GATEWAY_TOKEN ? {
+          'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}`
+        } : {}),
         'User-Agent': String(env.TARGET_BASE_URL)
       },
       body: JSON.stringify(envelope),
