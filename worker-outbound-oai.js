@@ -276,7 +276,8 @@ function resolveTarget(model, metadata, env) {
     try {
       table = JSON.parse(env.ROUTES);
     } catch {
-      /* bad JSON */ }
+      /* bad JSON */
+    }
     if (table) {
       if (table[model]) return buildUrl(table[model], metadata);
       let best = null,
