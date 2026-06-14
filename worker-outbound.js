@@ -120,18 +120,15 @@ export default {
               value
             } = await reader.read();
             if (done) break;
-            streamController.enqueue(sseEncode(isBytes ?
-              {
-                type: 'blob',
-                chunk: u8ToBase64(value)
-              } :
-              {
-                type: 'text',
-                chunk: dec.decode(value, {
-                  stream: true
-                })
-              }
-            ));
+            streamController.enqueue(sseEncode(isBytes ? {
+              type: 'blob',
+              chunk: u8ToBase64(value)
+            } : {
+              type: 'text',
+              chunk: dec.decode(value, {
+                stream: true
+              })
+            }));
           }
         }
 
@@ -174,7 +171,8 @@ function resolveTarget(model, metadata, env) {
     try {
       table = JSON.parse(env.ROUTES);
     } catch {
-      /* bad JSON */ }
+      /* bad JSON */
+    }
     if (table) {
       if (table[model]) return buildUrl(table[model], metadata);
       let best = null,
