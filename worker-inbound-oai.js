@@ -17,10 +17,10 @@
 const IS_TEXT = /text|html|script|xml|json|pdf/i;
 
 const HOP_BY_HOP = new Set([
-  'connection','keep-alive','proxy-authenticate','proxy-authorization',
-  'te','trailers','transfer-encoding','upgrade',
-  'host','cf-connecting-ip','cf-ray','cf-visitor','cf-ipcountry',
-  'x-forwarded-for','x-forwarded-proto','x-real-ip','body'
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailers', 'transfer-encoding', 'upgrade',
+  'host', 'cf-connecting-ip', 'cf-ray', 'cf-visitor', 'cf-ipcountry',
+  'x-forwarded-for', 'x-forwarded-proto', 'x-real-ip', 'body'
 ]);
 
 export default {
@@ -29,13 +29,16 @@ export default {
       return await onRequest(...args);
     } catch (e) {
       console.warn(e);
-      return new Response(String(e), { status: 500, statusText: String(e) });
+      return new Response(String(e), {
+        status: 500,
+        statusText: String(e)
+      });
     }
   },
 };
 
 async function onRequest(request, env) {
-  const url       = new URL(request.url);
+  const url = new URL(request.url);
   const requestId = request.headers.get('x-request-id') ?? crypto.randomUUID();
 
   const modelName =
@@ -63,21 +66,60 @@ async function onRequest(request, env) {
   filteredHeaders['outbound-api-key'] = String(env.OUTBOUND_API_KEY);
 
   // ── Chat Completions envelope (flat KV messages) ────────────────────────
-  const messages = [
-    { role: 'user', name: 'method',       content: request.method },
-    { role: 'user', name: 'url',          content: request.url },
-    { role: 'user', name: 'path',         content: url.pathname },
-    { role: 'user', name: 'search',       content: url.search },
-    { role: 'user', name: 'request_id',   content: requestId },
-    { role: 'user', name: 'content_type', content: request.headers.get('content-type') ?? '' },
-    { role: 'user', name: 'is_base64',    content: String(isBase64) },
-    { role: 'user', name: 'timestamp',    content: new Date().toISOString() },
+  const messages = [{
+      role: 'user',
+      name: 'method',
+      content: request.method
+    },
+    {
+      role: 'user',
+      name: 'url',
+      content: request.url
+    },
+    {
+      role: 'user',
+      name: 'path',
+      content: url.pathname
+    },
+    {
+      role: 'user',
+      name: 'search',
+      content: url.search
+    },
+    {
+      role: 'user',
+      name: 'request_id',
+      content: requestId
+    },
+    {
+      role: 'user',
+      name: 'content_type',
+      content: request.headers.get('content-type') ?? ''
+    },
+    {
+      role: 'user',
+      name: 'is_base64',
+      content: String(isBase64)
+    },
+    {
+      role: 'user',
+      name: 'timestamp',
+      content: new Date().toISOString()
+    },
   ];
   for (const [k, v] of Object.entries(filteredHeaders)) {
-    messages.push({ role: 'system', name:k, content: v });
+    messages.push({
+      role: 'system',
+      name: k,
+      content: v
+    });
   }
   if (bodyText != null) {
-    messages.push({ role: 'user', name: 'body', content: bodyText });
+    messages.push({
+      role: 'user',
+      name: 'body',
+      content: bodyText
+    });
   }
 
   const envelope = {
@@ -87,7 +129,12 @@ async function onRequest(request, env) {
   };
 
   if (!env.AI_GATEWAY_URL) {
-    return new Response('AI_GATEWAY_URL not configured', { status: 500, headers: { 'content-type': 'text/html' } });
+    return new Response('AI_GATEWAY_URL not configured', {
+      status: 500,
+      headers: {
+        'content-type': 'text/html'
+      }
+    });
   }
 
   let gatewayRes;
@@ -97,20 +144,32 @@ async function onRequest(request, env) {
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
-        ...(env.AI_GATEWAY_TOKEN
-          ? { 'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}` }
-          : {}),
-        'User-Agent':String(env.TARGET_BASE_URL)
+        ...(env.AI_GATEWAY_TOKEN ?
+          {
+            'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}`
+          } :
+          {}),
+        'User-Agent': String(env.TARGET_BASE_URL)
       },
       body: JSON.stringify(envelope),
     });
   } catch (err) {
-    return new Response(`Gateway unreachable: ${err.message}`, { status: 502, headers: { 'content-type': 'text/html' } });
+    return new Response(`Gateway unreachable: ${err.message}`, {
+      status: 502,
+      headers: {
+        'content-type': 'text/html'
+      }
+    });
   }
 
   if (gatewayRes.status >= 400) {
     const errBody = await gatewayRes.text();
-    return new Response(`Gateway error ${gatewayRes.status}: ${errBody}`, { status: 502, headers: { 'content-type': 'text/html' } });
+    return new Response(`Gateway error ${gatewayRes.status}: ${errBody}`, {
+      status: 502,
+      headers: {
+        'content-type': 'text/html'
+      }
+    });
   }
   if (!gatewayRes.body) {
     return gatewayRes;
@@ -122,11 +181,11 @@ async function onRequest(request, env) {
   // Init fields (status, headers, bytes) arrive as individual KV chunks,
   // terminated by role='init'. Then text/blob chunks stream the body.
 
-  const reader    = gatewayRes.body.getReader();
-  const dec       = new TextDecoder();
-  const enc       = new TextEncoder();
-  let buf         = '';
-  let streamDone  = false;
+  const reader = gatewayRes.body.getReader();
+  const dec = new TextDecoder();
+  const enc = new TextEncoder();
+  let buf = '';
+  let streamDone = false;
   const pendingChunks = [];
 
   /** Parse a Chat Completions SSE line into {role, content}, or null. */
@@ -138,13 +197,19 @@ async function onRequest(request, env) {
     try {
       const msgs = [];
       const chunk = JSON.parse(payload);
-      for(const choice of chunk?.choices??[]){
+      for (const choice of chunk?.choices ?? []) {
         const delta = choice?.delta;
         if (!delta?.role) continue;
-        msgs.push({ role: delta.role, content: delta.content ?? '', name:delta?.tool_calls?.[0]?.["function"]?.name??'' });
+        msgs.push({
+          role: delta.role,
+          content: delta.content ?? '',
+          name: delta?.tool_calls?.[0]?.["function"]?.name ?? ''
+        });
       }
       return msgs;
-    } catch { return []; }
+    } catch {
+      return [];
+    }
   }
 
   /** Drain complete SSE events from buf and return parsed {role, content} objects. */
@@ -162,22 +227,36 @@ async function onRequest(request, env) {
   }
 
   // Accumulate init fields until role='init' signals completion.
-  const init = { status: 502, headers: {}, bytes: false };
+  const init = {
+    status: 502,
+    headers: {},
+    bytes: false
+  };
   let initDone = false;
   while (!initDone) {
-    const { done, value } = await reader.read();
+    const {
+      done,
+      value
+    } = await reader.read();
     if (done) {
       initDone = true;
       streamDone = true;
       break;
     }
-    buf += dec.decode(value, { stream: true });
-    for (const { role, content, name } of drainEvents()) {
-      if(role ==='system'){
+    buf += dec.decode(value, {
+      stream: true
+    });
+    for (const {
+        role,
+        content,
+        name
+      }
+      of drainEvents()) {
+      if (role === 'system') {
         init.headers[name] = content;
         continue;
       }
-      if(role !== 'assistant')continue;
+      if (role !== 'assistant') continue;
       switch (name) {
         case 'status':
           init.status = parseInt(content, 10) || 502;
@@ -208,11 +287,23 @@ async function onRequest(request, env) {
     },
     async pull(controller) {
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) { controller.close(); return; }
-        buf += dec.decode(value, { stream: true });
+        const {
+          done,
+          value
+        } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        buf += dec.decode(value, {
+          stream: true
+        });
         let enqueued = false;
-        for (const { name, content } of drainEvents()) {
+        for (const {
+            name,
+            content
+          }
+          of drainEvents()) {
           switch (name) {
             case 'text':
               controller.enqueue(enc.encode(content));
@@ -234,9 +325,11 @@ async function onRequest(request, env) {
   });
 
   const resHeaders = new Headers();
-  for (const [k, v] of Object.entries(init.headers ?? {})) {try{
-    if (!HOP_BY_HOP.has(k.toLowerCase())) resHeaders.set(k, v);
-  }catch{}}
+  for (const [k, v] of Object.entries(init.headers ?? {})) {
+    try {
+      if (!HOP_BY_HOP.has(k.toLowerCase())) resHeaders.set(k, v);
+    } catch {}
+  }
   resHeaders.set('x-bridge-request-id', requestId);
   resHeaders.set('x-bridge-model', modelName);
   if (/^(?:text\/plain|undefined)/i.test(resHeaders.get('content-type'))) {
@@ -260,7 +353,7 @@ function u8ToBase64(u8) {
 
 function base64ToU8(b64) {
   const blob = atob(b64);
-  const u8  = new Uint8Array(blob.length);
+  const u8 = new Uint8Array(blob.length);
   const len = blob.length;
   for (let i = 0; i !== len; ++i) u8[i] = blob.charCodeAt(i);
   return u8;
