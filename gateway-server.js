@@ -7,7 +7,7 @@ const gatewayPrefix =/^https:\/\/gateway\.ai\.cloudflare\.com\/v1\/[^\/]+\/[^\/]
 const normalizeRequest = (request)=>{
     const url = new URL(request.url);
     url.pathname = (url.pathname || '').replace(/^\/v1/,'');
-    const reqHost = RegExp(request.headers.get('x-gateway-source'),'gi');
+    const reqHost = RegExp(String(request.headers.get('x-gateway-source')),'gi');
     const reqHeaders = new Headers(request.headers);
     reqHeaders.delete('x-gateway-source');
     
