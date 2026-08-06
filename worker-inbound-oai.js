@@ -25,9 +25,14 @@ const HOP_BY_HOP = new Set([
 
 const isHopByHop = (key) => HOP_BY_HOP.has(key.toLowerCase());
 
-/** Plain-text/html error response — the shape every early-exit path in onRequest needs. */
-const errorResponse = (message, status) =>
-  new Response(message, { status, headers: { 'content-type': 'text/html' } });
+/** Shared default for early-exit error responses. Change headers/status here, not per call site. */
+const DEFAULT_ERROR_INIT = {
+  status: 502,
+  headers: { 'content-type': 'text/html' },
+};
+
+const errorResponse = (message, status = DEFAULT_ERROR_INIT.status) =>
+  new Response(message, { ...DEFAULT_ERROR_INIT, status });
 
 export default {
   async fetch(...args) {
