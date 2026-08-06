@@ -28,11 +28,16 @@ const isHopByHop = (key) => HOP_BY_HOP.has(key.toLowerCase());
 /** Shared default for early-exit error responses. Change headers/status here, not per call site. */
 const DEFAULT_ERROR_INIT = {
   status: 502,
-  headers: { 'content-type': 'text/html' },
+  headers: {
+    'content-type': 'text/html'
+  },
 };
 
 const errorResponse = (message, status = DEFAULT_ERROR_INIT.status) =>
-  new Response(message, { ...DEFAULT_ERROR_INIT, status });
+  new Response(message, {
+    ...DEFAULT_ERROR_INIT,
+    status
+  });
 
 export default {
   async fetch(...args) {
@@ -91,13 +96,25 @@ async function onRequest(request, env) {
   };
   const messages = [];
   for (const name in requestMeta) {
-    messages.push({ role: 'user', name, content: requestMeta[name] });
+    messages.push({
+      role: 'user',
+      name,
+      content: requestMeta[name]
+    });
   }
   for (const key in filteredHeaders) {
-    messages.push({ role: 'system', name: key, content: filteredHeaders[key] });
+    messages.push({
+      role: 'system',
+      name: key,
+      content: filteredHeaders[key]
+    });
   }
   if (bodyText != null) {
-    messages.push({ role: 'user', name: 'body', content: bodyText });
+    messages.push({
+      role: 'user',
+      name: 'body',
+      content: bodyText
+    });
   }
 
   const envelope = {
@@ -117,7 +134,9 @@ async function onRequest(request, env) {
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
-        ...(env.AI_GATEWAY_TOKEN ? { 'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}` } : {}),
+        ...(env.AI_GATEWAY_TOKEN ? {
+          'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}`
+        } : {}),
         'User-Agent': String(env.TARGET_BASE_URL)
       },
       body: JSON.stringify(envelope),
@@ -185,27 +204,50 @@ async function onRequest(request, env) {
   }
 
   // Accumulate init fields until role='init' signals completion.
-  const init = { status: 502, headers: {}, bytes: false };
+  const init = {
+    status: 502,
+    headers: {},
+    bytes: false
+  };
   let initDone = false;
   while (!initDone) {
-    const { done, value } = await reader.read();
+    const {
+      done,
+      value
+    } = await reader.read();
     if (done) {
       initDone = true;
       streamDone = true;
       break;
     }
-    buffer += decoder.decode(value, { stream: true });
+    buffer += decoder.decode(value, {
+      stream: true
+    });
 
-    for (const { role, content, name } of drainEvents()) {
+    for (const {
+        role,
+        content,
+        name
+      }
+      of drainEvents()) {
       if (role === 'system') {
         init.headers[name] = content;
         continue;
       }
       if (role !== 'assistant') continue;
 
-      if (name === 'status') { init.status = parseInt(content, 10) || 502; continue; }
-      if (name === 'bytes') { init.bytes = content === 'true'; continue; }
-      if (name === 'init') { initDone = true; continue; }
+      if (name === 'status') {
+        init.status = parseInt(content, 10) || 502;
+        continue;
+      }
+      if (name === 'bytes') {
+        init.bytes = content === 'true';
+        continue;
+      }
+      if (name === 'init') {
+        initDone = true;
+        continue;
+      }
 
       const bytes = chunkToBytes(name, content);
       if (bytes) pendingChunks.push(bytes);
@@ -219,15 +261,24 @@ async function onRequest(request, env) {
     },
     async pull(controller) {
       while (true) {
-        const { done, value } = await reader.read();
+        const {
+          done,
+          value
+        } = await reader.read();
         if (done) {
           controller.close();
           return;
         }
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, {
+          stream: true
+        });
 
         let enqueued = false;
-        for (const { name, content } of drainEvents()) {
+        for (const {
+            name,
+            content
+          }
+          of drainEvents()) {
           const bytes = chunkToBytes(name, content);
           if (bytes) {
             controller.enqueue(bytes);
