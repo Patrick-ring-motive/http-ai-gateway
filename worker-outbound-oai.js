@@ -66,13 +66,18 @@ export default {
       return chatErrorResponse(null, 'Invalid JSON body');
     }
 
-    const { model, messages } = payload;
+    const {
+      model,
+      messages
+    } = payload;
     if (!model) return chatErrorResponse(null, 'Missing model field');
     if (!messages?.length) return chatErrorResponse(model, 'Missing messages array');
 
     // Extract metadata from flat KV messages. Most fields are a straight
     // name → content copy; META_TRANSFORMS covers the exceptions.
-    const metadata = { headers: {} };
+    const metadata = {
+      headers: {}
+    };
     let input = null;
     for (const msg of messages) {
       if (msg.role === 'system') {
@@ -137,7 +142,9 @@ export default {
         const status = [101, 204, 205, 304].includes(targetRes.status) ? 200 : targetRes.status;
 
         // Init fields as individual KV chunks, batched into one SSE line.
-        const initChunks = [['status', String(status)]];
+        const initChunks = [
+          ['status', String(status)]
+        ];
         for (const [key, value] of targetRes.headers) {
           initChunks.push([key, value, null, 'system']);
         }
@@ -154,24 +161,35 @@ export default {
           const reader = targetRes.body.getReader();
           const decoder = new TextDecoder();
           while (true) {
-            const { done, value } = await reader.read();
+            const {
+              done,
+              value
+            } = await reader.read();
             if (done) break;
-            const content = isBytes ? bytesToBase64(value) : decoder.decode(value, { stream: true });
+            const content = isBytes ? bytesToBase64(value) : decoder.decode(value, {
+              stream: true
+            });
             const name = isBytes ? 'blob' : 'text';
-            streamController.enqueue(ENCODER.encode(sseLine(chunkId, created, model, [[name, content]])));
+            streamController.enqueue(ENCODER.encode(sseLine(chunkId, created, model, [
+              [name, content]
+            ])));
           }
         }
 
         // done event with finish_reason
         streamController.enqueue(
-          ENCODER.encode(sseLine(chunkId, created, model, [['done', String(Date.now() - start), 'stop']]))
+          ENCODER.encode(sseLine(chunkId, created, model, [
+            ['done', String(Date.now() - start), 'stop']
+          ]))
         );
 
         // [DONE] sentinel
         streamController.enqueue(ENCODER.encode('data: [DONE]\n\n'));
       } catch (err) {
         try {
-          streamController.enqueue(ENCODER.encode(sseLine(chunkId, created, model, [['error', err.message]])));
+          streamController.enqueue(ENCODER.encode(sseLine(chunkId, created, model, [
+            ['error', err.message]
+          ])));
           streamController.enqueue(ENCODER.encode('data: [DONE]\n\n'));
         } catch (e) {
           console.warn(e);
@@ -189,7 +207,10 @@ export default {
 
     return newResponse(readable, {
       status: targetRes.status,
-      headers: { ...DEFAULT_SSE_HEADERS, 'X-Accel-Buffering': 'no' },
+      headers: {
+        ...DEFAULT_SSE_HEADERS,
+        'X-Accel-Buffering': 'no'
+      },
     });
   },
 };
@@ -237,7 +258,16 @@ function buildUrl(base, metadata) {
 function toChoice([name, content, finishReason, role = 'assistant'], index) {
   return {
     index,
-    delta: { role, content, tool_calls: [{ index: 0, function: { name } }] },
+    delta: {
+      role,
+      content,
+      tool_calls: [{
+        index: 0,
+        function: {
+          name
+        }
+      }]
+    },
     finish_reason: finishReason ?? null,
   };
 }
