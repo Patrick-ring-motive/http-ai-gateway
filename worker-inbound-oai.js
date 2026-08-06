@@ -147,7 +147,7 @@ async function onRequest(request, env) {
   const pendingChunks = [];
 
   /** Parse a Chat Completions SSE line into [{role, content, name}], or []. */
-  function parseChunkLine(line) {
+  function lineToEvents(line) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('data:')) return [];
     const payload = trimmed.slice(5).trim();
@@ -166,7 +166,7 @@ async function onRequest(request, env) {
       }
       return parsed;
     } catch (e) {
-      console.warn('parseChunkLine', e);
+      console.warn('lineToEvents', e);
       return [];
     }
   }
@@ -178,7 +178,7 @@ async function onRequest(request, env) {
     const events = [];
     for (const part of parts) {
       for (const line of part.split('\n')) {
-        events.push(...parseChunkLine(line));
+        events.push(...lineToEvents(line));
       }
     }
     return events;
