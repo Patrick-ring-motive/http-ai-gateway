@@ -14,6 +14,8 @@
  * Stream ends with data: [DONE].
  */
 
+const ENCODER = new TextEncoder(); // stateless — safe to share across requests
+
 const newResponse = (...args) => {
   try {
     return new Response(...args);
@@ -36,32 +38,41 @@ const HOP_BY_HOP = new Set([
   'host', 'cf-connecting-ip', 'cf-ray', 'cf-visitor', 'cf-ipcountry',
 ]);
 
+const isHopByHop = (key) => HOP_BY_HOP.has(key.toLowerCase());
+
+/** Shared default for SSE responses. Change headers here, not per call site. */
+const DEFAULT_SSE_HEADERS = {
+  'Content-Type': 'text/event-stream',
+  'Cache-Control': 'no-cache',
+};
+
+// Flat KV message name → metadata field is a straight copy by default;
+// this only needs to list the exceptions.
+const META_TRANSFORMS = {
+  is_base64: (content) => content === 'true',
+};
+
 export default {
   async fetch(request, env, ctx) {
     if (request.headers.get('authorization') !== `Bearer ${env.CF_AIG_AUTHORIZATION}`) {
-      return chatError(null, 'AI Gateway unauthorized');
+      return chatErrorResponse(null, 'AI Gateway unauthorized');
     }
 
     let payload;
     try {
       payload = await request.json();
-    } catch {
-      return chatError(null, 'Invalid JSON body');
+    } catch (e) {
+      console.warn(e);
+      return chatErrorResponse(null, 'Invalid JSON body');
     }
 
-    const {
-      model,
-      messages
-    } = payload;
-    if (!model) return chatError(null, 'Missing model field');
-    if (!messages?.length) {
-      return chatError(model, 'Missing messages array');
-    }
+    const { model, messages } = payload;
+    if (!model) return chatErrorResponse(null, 'Missing model field');
+    if (!messages?.length) return chatErrorResponse(model, 'Missing messages array');
 
-    // Extract metadata from flat KV messages
-    const metadata = {
-      headers: {}
-    };
+    // Extract metadata from flat KV messages. Most fields are a straight
+    // name → content copy; META_TRANSFORMS covers the exceptions.
+    const metadata = { headers: {} };
     let input = null;
     for (const msg of messages) {
       if (msg.role === 'system') {
@@ -69,53 +80,30 @@ export default {
         continue;
       }
       if (msg.role !== 'user') continue;
-      switch (msg.name) {
-        case 'body':
-          input = msg.content;
-          break;
-        case 'method':
-          metadata.method = msg.content;
-          break;
-        case 'url':
-          metadata.url = msg.content;
-          break;
-        case 'path':
-          metadata.path = msg.content;
-          break;
-        case 'search':
-          metadata.search = msg.content;
-          break;
-        case 'request_id':
-          metadata.request_id = msg.content;
-          break;
-        case 'content_type':
-          metadata.content_type = msg.content;
-          break;
-        case 'is_base64':
-          metadata.is_base64 = msg.content === 'true';
-          break;
-        case 'timestamp':
-          metadata.timestamp = msg.content;
-          break;
+      if (msg.name === 'body') {
+        input = msg.content;
+        continue;
       }
+      const transform = META_TRANSFORMS[msg.name];
+      metadata[msg.name] = transform ? transform(msg.content) : msg.content;
     }
 
-    const targetUrl = resolveTarget(model, metadata, env);
-    if (!targetUrl) return chatError(model, `No route for model: ${model}`);
+    const targetUrl = resolveTargetUrl(model, metadata, env);
+    if (!targetUrl) return chatErrorResponse(model, `No route for model: ${model}`);
 
     const fwdHeaders = new Headers();
-    for (const [k, v] of Object.entries(metadata?.headers ?? {})) {
-      if (!HOP_BY_HOP.has(k.toLowerCase())) fwdHeaders.set(k, v);
+    for (const key in metadata.headers) {
+      if (!isHopByHop(key)) fwdHeaders.set(key, metadata.headers[key]);
     }
 
     if (fwdHeaders.get('outbound-api-key') !== env.OUTBOUND_API_KEY) {
-      return chatError(null, 'Missing outbound api key');
+      return chatErrorResponse(null, 'Missing outbound api key');
     }
 
-    const method = (metadata?.method ?? 'GET').toUpperCase();
+    const method = (metadata.method ?? 'GET').toUpperCase();
     let fwdBody;
-    if (method !== 'GET' && method !== 'HEAD' && input != null) {
-      fwdBody = metadata?.is_base64 ? base64ToU8(input) : input;
+    if (!/head|get/i.test(method) && input != null) {
+      fwdBody = metadata.is_base64 ? base64ToBytes(input) : input;
     }
 
     const start = Date.now();
@@ -128,163 +116,101 @@ export default {
         redirect: 'follow',
       });
     } catch (err) {
-      return chatError(model, `Target unreachable: ${err.message}`);
+      return chatErrorResponse(model, `Target unreachable: ${err.message}`);
     }
 
-    const ct = targetRes.headers.get('content-type') ?? '';
-    const isBytes = !IS_TEXT.test(ct);
+    const isBytes = !IS_TEXT.test(targetRes.headers.get('content-type'));
 
-    const requestId = metadata?.request_id ?? crypto.randomUUID();
+    const requestId = metadata.request_id ?? crypto.randomUUID();
     const chunkId = `chatcmpl-${requestId}`;
     const created = Math.floor(Date.now() / 1000);
 
-    const enc = new TextEncoder();
-
-    /** Emit a single SSE chunk with delta.role and delta.content. */
-    function sseChunk(name, content, finishReason, role = 'assistant') {
-      const obj = {
-        id: chunkId,
-        object: 'chat.completion.chunk',
-        created,
-        model,
-        choices: [{
-          index: 0,
-          delta: {
-            role,
-            content,
-            tool_calls: [{
-              index: 0,
-              function: {
-                name
-              }
-            }]
-          },
-          finish_reason: finishReason ?? null,
-        }],
-      };
-      return enc.encode(`data: ${JSON.stringify(obj)}\n\n`);
-    }
-
-    function sseChunks(input) {
-      const out = [];
-      const len = input.length;
-      for (let i = 0; i !== len; ++i) {
-        let [name, content, finishReason, role] = input[i];
-        role ??= 'assistant';
-        out.push({
-          index: i,
-          delta: {
-            role,
-            content,
-            tool_calls: [{
-              index: 0,
-              function: {
-                name
-              }
-            }]
-          },
-          finish_reason: finishReason ?? null
-        });
-      }
-      const obj = {
-        id: chunkId,
-        object: 'chat.completion.chunk',
-        created,
-        model,
-        choices: out,
-      };
-      return enc.encode(`data: ${JSON.stringify(obj)}\n\n`);
-    }
-
     let streamController;
     const readable = new ReadableStream({
-      start(c) {
-        streamController = c;
+      start(controller) {
+        streamController = controller;
       },
     });
 
     const pipePromise = (async () => {
       try {
-        const status = [101, 204, 205, 304].includes(targetRes.status) ? 200 : targetRes?.status ?? 200;
-        const chunks = [];
-        // Init fields as individual KV chunks
-        chunks.push(['status', String(status)]);
-        for (const [k, v] of targetRes.headers.entries()) {
-          chunks.push([k, v, null, 'system']);
+        const status = [101, 204, 205, 304].includes(targetRes.status) ? 200 : targetRes.status;
+
+        // Init fields as individual KV chunks, batched into one SSE line.
+        const initChunks = [['status', String(status)]];
+        for (const [key, value] of targetRes.headers) {
+          initChunks.push([key, value, null, 'system']);
         }
-        chunks.push(['bytes', String(isBytes)]);
-        chunks.push(['model', model]);
-        chunks.push(['request_id', requestId]);
-        chunks.push(['target_url', targetUrl]);
-        chunks.push(['init', 'done']);
-        streamController.enqueue(sseChunks(chunks));
+        initChunks.push(
+          ['bytes', String(isBytes)],
+          ['model', model],
+          ['request_id', requestId],
+          ['target_url', targetUrl],
+          ['init', 'done'],
+        );
+        streamController.enqueue(ENCODER.encode(sseLine(chunkId, created, model, initChunks)));
+
         if (targetRes.body) {
           const reader = targetRes.body.getReader();
-          const dec = new TextDecoder();
+          const decoder = new TextDecoder();
           while (true) {
-            const {
-              done,
-              value
-            } = await reader.read();
+            const { done, value } = await reader.read();
             if (done) break;
-            streamController.enqueue(sseChunk(
-              isBytes ? 'blob' : 'text',
-              isBytes ? u8ToBase64(value) : dec.decode(value, {
-                stream: true
-              })
-            ));
+            const content = isBytes ? bytesToBase64(value) : decoder.decode(value, { stream: true });
+            const name = isBytes ? 'blob' : 'text';
+            streamController.enqueue(ENCODER.encode(sseLine(chunkId, created, model, [[name, content]])));
           }
         }
 
         // done event with finish_reason
-        streamController.enqueue(sseChunk('done', String(Date.now() - start), 'stop'));
+        streamController.enqueue(
+          ENCODER.encode(sseLine(chunkId, created, model, [['done', String(Date.now() - start), 'stop']]))
+        );
 
         // [DONE] sentinel
-        streamController.enqueue(enc.encode('data: [DONE]\n\n'));
+        streamController.enqueue(ENCODER.encode('data: [DONE]\n\n'));
       } catch (err) {
         try {
-          streamController.enqueue(sseChunk('error', err.message));
-        } catch {}
-        try {
-          streamController.enqueue(enc.encode('data: [DONE]\n\n'));
-        } catch {}
+          streamController.enqueue(ENCODER.encode(sseLine(chunkId, created, model, [['error', err.message]])));
+          streamController.enqueue(ENCODER.encode('data: [DONE]\n\n'));
+        } catch (e) {
+          console.warn(e);
+        }
       } finally {
         try {
           streamController.close();
-        } catch {}
+        } catch (e) {
+          console.warn(e);
+        }
       }
     })();
 
     ctx.waitUntil(pipePromise);
 
     return newResponse(readable, {
-      status: targetRes?.status ?? 200,
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'X-Accel-Buffering': 'no',
-      },
+      status: targetRes.status,
+      headers: { ...DEFAULT_SSE_HEADERS, 'X-Accel-Buffering': 'no' },
     });
   },
 };
 
-// ── routing ────────────────────────────────────────────────────────────────────
+// ── routing ──────────────────────────────────────────────────────────────
 
-function resolveTarget(model, metadata, env) {
+function resolveTargetUrl(model, metadata, env) {
   if (env.ROUTES) {
     let table;
     try {
       table = JSON.parse(env.ROUTES);
-    } catch {
-      /* bad JSON */
+    } catch (e) {
+      console.warn('bad ROUTES JSON', e);
     }
     if (table) {
       if (table[model]) return buildUrl(table[model], metadata);
-      let best = null,
-        bestLen = -1;
-      for (const [prefix, url] of Object.entries(table)) {
+      let best = null;
+      let bestLen = -1;
+      for (const prefix in table) {
         if (model.startsWith(prefix + '.') && prefix.length > bestLen) {
-          best = url;
+          best = table[prefix];
           bestLen = prefix.length;
         }
       }
@@ -293,95 +219,76 @@ function resolveTarget(model, metadata, env) {
   }
   if (env.TARGET_BASE_URL) return buildUrl(env.TARGET_BASE_URL, metadata);
 
-  const segs = (metadata?.path ?? '').replace(/^\//, '').split('/');
+  const segs = (metadata.path ?? '').replace(/^\//, '').split('/');
   if (segs[0]?.includes('.')) {
     const rest = segs.length > 1 ? '/' + segs.slice(1).join('/') : '/';
-    return `https://${segs[0]}${rest}${metadata?.search ?? ''}`;
+    return `https://${segs[0]}${rest}${metadata.search ?? ''}`;
   }
 
   return null;
 }
 
 function buildUrl(base, metadata) {
-  return base.replace(/\/+$/, '') + (metadata?.path ?? '') + (metadata?.search ?? '');
+  return base.replace(/\/+$/, '') + (metadata.path ?? '') + (metadata.search ?? '');
 }
 
-// ── SSE helpers ────────────────────────────────────────────────────────────────
+// ── SSE helpers ──────────────────────────────────────────────────────────
+
+function toChoice([name, content, finishReason, role = 'assistant'], index) {
+  return {
+    index,
+    delta: { role, content, tool_calls: [{ index: 0, function: { name } }] },
+    finish_reason: finishReason ?? null,
+  };
+}
+
+/**
+ * One SSE `data: {...}\n\n` line covering one or more choices.
+ * entries: array of [name, content, finishReason?, role?] tuples.
+ * Shared by the main stream and chatErrorResponse — same wire shape either way.
+ */
+function sseLine(chunkId, created, model, entries) {
+  const choices = entries.map(toChoice);
+  return `data: ${JSON.stringify({ id: chunkId, object: 'chat.completion.chunk', created, model, choices })}\n\n`;
+}
 
 /** Error response in Chat Completions SSE format. Always emits init first. */
-function chatError(model, message) {
+function chatErrorResponse(model, message) {
   const chunkId = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
-  const mdl = model ?? 'unknown';
-
-  function chunk(name, content, finishReason, role = 'assistant') {
-    return `data: ${JSON.stringify({
-      id: chunkId, object: 'chat.completion.chunk', created, model: mdl,
-      choices: [{ index: 0, delta: { role, content, tool_calls:[{index:0,function:{name}}]},finish_reason: finishReason ?? null }],
-    })}\n\n`;
-  }
-
-  function chunks(input) {
-    const out = [];
-    const len = input.length;
-    for (let i = 0; i !== len; ++i) {
-      let [name, content, finishReason, role] = input[i];
-      role ??= 'assistant';
-      out.push({
-        index: i,
-        delta: {
-          role,
-          content,
-          tool_calls: [{
-            index: 0,
-            function: {
-              name
-            }
-          }]
-        },
-        finish_reason: finishReason ?? null
-      });
-    }
-    return `data: ${JSON.stringify({
-      id: chunkId, object: 'chat.completion.chunk', created, model: mdl,
-      choices: out,
-    })}\n\n`;
-  }
+  const modelName = model ?? 'unknown';
 
   const lines = [
-    chunks([
+    sseLine(chunkId, created, modelName, [
       ['status', '502'],
       ['bytes', 'false'],
-      ['model', mdl],
+      ['model', modelName],
       ['init', 'done'],
       ['text', message],
-      ['done', '0', 'stop']
+      ['done', '0', 'stop'],
     ]),
     'data: [DONE]\n\n',
   ].join('');
 
   return newResponse(lines, {
     status: 500,
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache'
-    },
+    headers: DEFAULT_SSE_HEADERS,
   });
 }
 
-// ── codec ──────────────────────────────────────────────────────────────────────
+// ── codec ────────────────────────────────────────────────────────────────
 
-function u8ToBase64(u8) {
-  let s = '';
-  const len = u8.length;
-  for (let i = 0; i !== len; ++i) s += String.fromCharCode(u8[i]);
-  return btoa(s);
+function bytesToBase64(bytes) {
+  let str = '';
+  const len = bytes.length;
+  for (let i = 0; i !== len; ++i) str += String.fromCharCode(bytes[i]);
+  return btoa(str);
 }
 
-function base64ToU8(b64) {
-  const blob = atob(b64);
-  const u8 = new Uint8Array(blob.length);
-  const len = blob.length;
-  for (let i = 0; i !== len; ++i) u8[i] = blob.charCodeAt(i);
-  return u8;
+function base64ToBytes(base64) {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  const len = binaryString.length;
+  for (let i = 0; i !== len; ++i) bytes[i] = binaryString.charCodeAt(i);
+  return bytes;
 }
