@@ -23,6 +23,12 @@ const HOP_BY_HOP = new Set([
   'x-forwarded-for', 'x-forwarded-proto', 'x-real-ip', 'body'
 ]);
 
+const isHopByHop = (key) => HOP_BY_HOP.has(key.toLowerCase());
+
+/** Plain-text/html error response — the shape every early-exit path in onRequest needs. */
+const errorResponse = (message, status) =>
+  new Response(message, { status, headers: { 'content-type': 'text/html' } });
+
 export default {
   async fetch(...args) {
     try {
@@ -47,79 +53,46 @@ async function onRequest(request, env) {
     'default';
 
   // Read request body
+  const contentType = request.headers.get('content-type');
   let bodyText = null;
   let isBase64 = false;
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    const ct = request.headers.get('content-type') ?? '';
-    if (IS_TEXT.test(ct)) {
+  if (!/head|get/i.test(request.method)) {
+    if (IS_TEXT.test(contentType)) {
       bodyText = await request.text();
     } else {
-      const buf = await request.arrayBuffer();
-      bodyText = u8ToBase64(new Uint8Array(buf));
+      const arrayBuffer = await request.arrayBuffer();
+      bodyText = bytesToBase64(new Uint8Array(arrayBuffer));
       isBase64 = true;
     }
   }
 
-  const filteredHeaders = Object.fromEntries(
-    [...request.headers.entries()].filter(([k]) => !HOP_BY_HOP.has(k.toLowerCase()))
-  );
+  // Filter hop-by-hop headers once, reuse for outbound envelope.
+  const filteredHeaders = {};
+  for (const [key, value] of request.headers) {
+    if (!isHopByHop(key)) filteredHeaders[key] = value;
+  }
   filteredHeaders['outbound-api-key'] = String(env.OUTBOUND_API_KEY);
 
   // ── Chat Completions envelope (flat KV messages) ────────────────────────
-  const messages = [{
-      role: 'user',
-      name: 'method',
-      content: request.method
-    },
-    {
-      role: 'user',
-      name: 'url',
-      content: request.url
-    },
-    {
-      role: 'user',
-      name: 'path',
-      content: url.pathname
-    },
-    {
-      role: 'user',
-      name: 'search',
-      content: url.search
-    },
-    {
-      role: 'user',
-      name: 'request_id',
-      content: requestId
-    },
-    {
-      role: 'user',
-      name: 'content_type',
-      content: request.headers.get('content-type') ?? ''
-    },
-    {
-      role: 'user',
-      name: 'is_base64',
-      content: String(isBase64)
-    },
-    {
-      role: 'user',
-      name: 'timestamp',
-      content: new Date().toISOString()
-    },
-  ];
-  for (const [k, v] of Object.entries(filteredHeaders)) {
-    messages.push({
-      role: 'system',
-      name: k,
-      content: v
-    });
+  const requestMeta = {
+    method: request.method,
+    url: request.url,
+    path: url.pathname,
+    search: url.search,
+    request_id: requestId,
+    content_type: contentType ?? '',
+    is_base64: String(isBase64),
+    timestamp: new Date().toISOString(),
+  };
+  const messages = [];
+  for (const name in requestMeta) {
+    messages.push({ role: 'user', name, content: requestMeta[name] });
+  }
+  for (const key in filteredHeaders) {
+    messages.push({ role: 'system', name: key, content: filteredHeaders[key] });
   }
   if (bodyText != null) {
-    messages.push({
-      role: 'user',
-      name: 'body',
-      content: bodyText
-    });
+    messages.push({ role: 'user', name: 'body', content: bodyText });
   }
 
   const envelope = {
@@ -129,12 +102,7 @@ async function onRequest(request, env) {
   };
 
   if (!env.AI_GATEWAY_URL) {
-    return new Response('AI_GATEWAY_URL not configured', {
-      status: 500,
-      headers: {
-        'content-type': 'text/html'
-      }
-    });
+    return errorResponse('AI_GATEWAY_URL not configured', 500);
   }
 
   let gatewayRes;
@@ -144,30 +112,18 @@ async function onRequest(request, env) {
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
-        ...(env.AI_GATEWAY_TOKEN ? {
-          'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}`
-        } : {}),
+        ...(env.AI_GATEWAY_TOKEN ? { 'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}` } : {}),
         'User-Agent': String(env.TARGET_BASE_URL)
       },
       body: JSON.stringify(envelope),
     });
   } catch (err) {
-    return new Response(`Gateway unreachable: ${err.message}`, {
-      status: 502,
-      headers: {
-        'content-type': 'text/html'
-      }
-    });
+    return errorResponse(`Gateway unreachable: ${err.message}`, 502);
   }
 
   if (gatewayRes.status >= 400) {
     const errBody = await gatewayRes.text();
-    return new Response(`Gateway error ${gatewayRes.status}: ${errBody}`, {
-      status: 502,
-      headers: {
-        'content-type': 'text/html'
-      }
-    });
+    return errorResponse(`Gateway error ${gatewayRes.status}: ${errBody}`, 502);
   }
   if (!gatewayRes.body) {
     return gatewayRes;
@@ -180,101 +136,74 @@ async function onRequest(request, env) {
   // terminated by role='init'. Then text/blob chunks stream the body.
 
   const reader = gatewayRes.body.getReader();
-  const dec = new TextDecoder();
-  const enc = new TextEncoder();
-  let buf = '';
+  const decoder = new TextDecoder(); // per-request: keeps streaming state across reads
+  let buffer = '';
   let streamDone = false;
   const pendingChunks = [];
 
-  /** Parse a Chat Completions SSE line into {role, content}, or null. */
+  /** Parse a Chat Completions SSE line into [{role, content, name}], or []. */
   function parseChunkLine(line) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('data:')) return [];
     const payload = trimmed.slice(5).trim();
     if (payload === '[DONE]') return [];
     try {
-      const msgs = [];
       const chunk = JSON.parse(payload);
+      const parsed = [];
       for (const choice of chunk?.choices ?? []) {
         const delta = choice?.delta;
         if (!delta?.role) continue;
-        msgs.push({
+        parsed.push({
           role: delta.role,
           content: delta.content ?? '',
-          name: delta?.tool_calls?.[0]?.["function"]?.name ?? ''
+          name: delta?.tool_calls?.[0]?.['function']?.name ?? ''
         });
       }
-      return msgs;
-    } catch {
+      return parsed;
+    } catch (e) {
+      console.warn('parseChunkLine', e);
       return [];
     }
   }
 
-  /** Drain complete SSE events from buf and return parsed {role, content} objects. */
+  /** Drain complete SSE events from buffer, return parsed {role, content, name} objects. */
   function drainEvents() {
-    const parts = buf.split('\n\n');
-    buf = parts.pop() ?? '';
-    const out = [];
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+    const events = [];
     for (const part of parts) {
       for (const line of part.split('\n')) {
-        const evts = parseChunkLine(line);
-        out.push(...evts);
+        events.push(...parseChunkLine(line));
       }
     }
-    return out;
+    return events;
   }
 
   // Accumulate init fields until role='init' signals completion.
-  const init = {
-    status: 502,
-    headers: {},
-    bytes: false
-  };
+  const init = { status: 502, headers: {}, bytes: false };
   let initDone = false;
   while (!initDone) {
-    const {
-      done,
-      value
-    } = await reader.read();
+    const { done, value } = await reader.read();
     if (done) {
       initDone = true;
       streamDone = true;
       break;
     }
-    buf += dec.decode(value, {
-      stream: true
-    });
-    for (const {
-        role,
-        content,
-        name
-      }
-      of drainEvents()) {
+    buffer += decoder.decode(value, { stream: true });
+
+    for (const { role, content, name } of drainEvents()) {
       if (role === 'system') {
         init.headers[name] = content;
         continue;
       }
       if (role !== 'assistant') continue;
-      switch (name) {
-        case 'status':
-          init.status = parseInt(content, 10) || 502;
-          break;
-        case 'bytes':
-          init.bytes = content === 'true';
-          break;
-        case 'init':
-          initDone = true;
-          break;
-        case 'text':
-          pendingChunks.push(enc.encode(content));
-          break;
-        case 'blob':
-          pendingChunks.push(base64ToU8(content));
-          break;
-        case 'error':
-          pendingChunks.push(enc.encode(content || 'upstream error'));
-          break;
-      }
+
+      if (name === 'status') { init.status = parseInt(content, 10) || 502; continue; }
+      if (name === 'bytes') { init.bytes = content === 'true'; continue; }
+      if (name === 'init') { initDone = true; continue; }
+
+      const bytes = chunkToBytes(name, content);
+      if (bytes) pendingChunks.push(bytes);
     }
   }
 
@@ -285,36 +214,19 @@ async function onRequest(request, env) {
     },
     async pull(controller) {
       while (true) {
-        const {
-          done,
-          value
-        } = await reader.read();
+        const { done, value } = await reader.read();
         if (done) {
           controller.close();
           return;
         }
-        buf += dec.decode(value, {
-          stream: true
-        });
+        buffer += decoder.decode(value, { stream: true });
+
         let enqueued = false;
-        for (const {
-            name,
-            content
-          }
-          of drainEvents()) {
-          switch (name) {
-            case 'text':
-              controller.enqueue(enc.encode(content));
-              enqueued = true;
-              break;
-            case 'blob':
-              controller.enqueue(base64ToU8(content));
-              enqueued = true;
-              break;
-            case 'error':
-              controller.enqueue(enc.encode(content || 'upstream error'));
-              enqueued = true;
-              break;
+        for (const { name, content } of drainEvents()) {
+          const bytes = chunkToBytes(name, content);
+          if (bytes) {
+            controller.enqueue(bytes);
+            enqueued = true;
           }
         }
         if (enqueued) return;
@@ -323,10 +235,13 @@ async function onRequest(request, env) {
   });
 
   const resHeaders = new Headers();
-  for (const [k, v] of Object.entries(init.headers ?? {})) {
+  for (const key in init.headers) {
+    if (isHopByHop(key)) continue;
     try {
-      if (!HOP_BY_HOP.has(k.toLowerCase())) resHeaders.set(k, v);
-    } catch {}
+      resHeaders.set(key, init.headers[key]);
+    } catch (e) {
+      console.warn(e);
+    }
   }
   resHeaders.set('x-bridge-request-id', requestId);
   resHeaders.set('x-bridge-model', modelName);
@@ -340,19 +255,33 @@ async function onRequest(request, env) {
   });
 }
 
-// ── codec ──────────────────────────────────────────────────────────────────────
+// ── codec ────────────────────────────────────────────────────────────────
 
-function u8ToBase64(u8) {
-  let s = '';
-  const len = u8.length;
-  for (let i = 0; i !== len; ++i) s += String.fromCharCode(u8[i]);
-  return btoa(s);
+const ENCODER = new TextEncoder(); // stateless — safe to share across requests
+
+// Data-driven dispatch: chunk name → bytes, replaces the duplicated
+// text/blob/error switch that used to live in both the init loop and pull().
+const CHUNK_DECODERS = {
+  text: (content) => ENCODER.encode(content),
+  blob: (content) => base64ToBytes(content),
+  error: (content) => ENCODER.encode(content || 'upstream error'),
+};
+
+function chunkToBytes(name, content) {
+  return CHUNK_DECODERS[name]?.(content) ?? null;
 }
 
-function base64ToU8(b64) {
-  const blob = atob(b64);
-  const u8 = new Uint8Array(blob.length);
-  const len = blob.length;
-  for (let i = 0; i !== len; ++i) u8[i] = blob.charCodeAt(i);
-  return u8;
+function bytesToBase64(bytes) {
+  let str = '';
+  const len = bytes.length;
+  for (let i = 0; i !== len; ++i) str += String.fromCharCode(bytes[i]);
+  return btoa(str);
+}
+
+function base64ToBytes(base64) {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  const len = binaryString.length;
+  for (let i = 0; i !== len; ++i) bytes[i] = binaryString.charCodeAt(i);
+  return bytes;
 }
